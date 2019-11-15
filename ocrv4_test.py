@@ -2,9 +2,10 @@
 from __future__ import division
 import math
 from six.moves import xrange
+import os
+os.environ['TF_CPP_MIN_VLOG_LEVEL'] = '0'
 import tensorflow as tf
 import numpy as np
-import os
 from skimage.transform import resize as imresize
 import cv2
 import time
@@ -15,6 +16,7 @@ from tensorflow.contrib.rnn import RNNCell, LSTMStateTuple
 from sklearn.model_selection import train_test_split
 import csv
 import random
+
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
@@ -131,7 +133,8 @@ for i in tqdm(range(len(images))):
         if w <= 480:
             __image = add_padding(__image)
             __image = cv2.cvtColor(__image,cv2.COLOR_BGR2GRAY)
-            _image = __image.astype(np.float32)/255.0
+            _image = __image.astype(np.float32) - 128.0
+            _image = _image / 128.0
             X.append(_image)
             Y.append([encode_maps[c] for c in labels[i]] + [2])
 
@@ -442,7 +445,34 @@ learning_rate = 1e-5
 
 # tf.contrib.seq2seq as decoder part
 
+def Concatenation(layers):
+    return tf.concat(layers, axis=3)
+
+def concat_layer1(x,kernel,stride):
+    x = tf.layers.conv2d(x, 64, kernel, stride, "SAME",
+            activation=tf.nn.relu)
+    x = tf.layers.max_pooling2d(x, 2, 2, "SAME")
+
+    return x
+
+
 class Model:
+    def batch_norm(self, name, x):
+        with tf.variable_scope(name):
+            params_shape = [x.get_shape()[-1]]
+            beta = tf.get_variable('beta', params_shape, tf.float32,
+                                   initializer=tf.constant_initializer(0.0, tf.float32))
+            gamma = tf.get_variable('gamma', params_shape, tf.float32,
+                                    initializer=tf.constant_initializer(1.0, tf.float32))
+            mean, variance = tf.nn.moments(x, [0, 1, 2], name='moments')
+            x_bn = tf.nn.batch_normalization(x, mean, variance, beta, gamma, 0.001)
+            x_bn.set_shape(x.get_shape())
+            return x_bn
+        
+    def leaky_relu(self, x, leak=0):
+        return tf.where(tf.less(x, 0.0), leak * x, x, name='leaky_relu')
+
+
     def __init__(self):
         self.X = tf.placeholder(tf.float32, shape=(None, 32, 480, 1))
         self.Y = tf.placeholder(tf.int32, [None, None])
@@ -456,26 +486,61 @@ class Model:
         
         img = self.X
         
-        out = tf.layers.conv2d(img, 64, 3, 1, "SAME",
-                activation=tf.nn.relu)
-        out = tf.layers.max_pooling2d(out, 2, 2, "SAME")
+        # out = tf.layers.conv2d(img, 64, 3, 1, "SAME",
+        #         activation=tf.nn.relu)
+        # out = tf.layers.max_pooling2d(out, 2, 2, "SAME")
 
-        out = tf.layers.conv2d(out, 128, 3, 1, "SAME",
-                activation=tf.nn.relu)
-        out = tf.layers.max_pooling2d(out, 2, 2, "SAME")
+        # out = tf.layers.conv2d(out, 128, 3, 1, "SAME",
+        #         activation=tf.nn.relu)
+        # out = tf.layers.max_pooling2d(out, 2, 2, "SAME")
 
-        out = tf.layers.conv2d(out, 256, 3, 1, "SAME",
-                activation=tf.nn.relu)
+        # out = tf.layers.conv2d(out, 256, 3, 1, "SAME",
+        #         activation=tf.nn.relu)
 
-        out = tf.layers.conv2d(out, 256, 3, 1, "SAME",
+        # out = tf.layers.conv2d(out, 256, 3, 1, "SAME",
+        #         activation=tf.nn.relu)
+        # out = tf.layers.max_pooling2d(out, (2, 1), (2, 1), "SAME")
+        # out = tf.layers.conv2d(out, 512, 3, 1, "SAME",
+        #         activation=tf.nn.relu)
+        # out = tf.layers.max_pooling2d(out, (1, 2), (1, 2), "SAME")
+        # out = tf.layers.conv2d(out, 512, 3, 1, "VALID",
+        #         activation=tf.nn.relu)
+        concat_layers = list()
+        out = img
+        concat_layers.append(concat_layer1(out,(5,5),(1,1)))
+        concat_layers.append(concat_layer1(out,(3,4),(1,1)))
+        concat_layers.append(concat_layer1(out,(3,3),(1,1)))
+        concat_layers.append(concat_layer1(out,(2,2),(1,1)))
+
+        out = Concatenation(concat_layers)
+        
+        # out = self.batch_norm('bn1',out)
+        # out = tf.nn.dropout(out,.5)
+        concat_layers = list()
+        # concat_layers.append(out)
+        concat_layers.append(concat_layer1(out,(3,3),(1,1),256))
+        concat_layers.append(concat_layer1(out,(1,1),(1,1),256))
+        out = Concatenation(concat_layers)
+        # out = tf.layers.max_pooling2d(out, 2, 2, "SAME")
+        # out = self.batch_norm('bn2',out)
+        # out = tf.nn.dropout(out,.5)
+
+        out = tf.layers.conv2d(out, 512, (3,3), (1,1), "SAME",
                 activation=tf.nn.relu)
+        # out = self.batch_norm('bn3',out)
+        # out = tf.nn.dropout(out,.5)
+        # out = tf.layers.conv2d(out, 256, 3, 1, "SAME",
+        #         activation=tf.nn.relu)
         out = tf.layers.max_pooling2d(out, (2, 1), (2, 1), "SAME")
-        out = tf.layers.conv2d(out, 512, 3, 1, "SAME",
+        out = tf.layers.conv2d(out, 512, (3,3), (1,1), "SAME",
                 activation=tf.nn.relu)
-        out = tf.layers.max_pooling2d(out, (1, 2), (1, 2), "SAME")
-        out = tf.layers.conv2d(out, 512, 3, 1, "VALID",
+        print('out shape', out.shape)
+        out = tf.layers.max_pooling2d(out, (2, 2), (2, 2), "SAME")
+        out = tf.layers.conv2d(out, 512, 1, 1, "VALID",
                 activation=tf.nn.relu)
+        print('out shape', out.shape)
         img = add_timing_signal_nd(out)
+        print('out2 shape', out.shape)
         print(img)
         
         with tf.variable_scope("attn_cell", reuse=False):
@@ -533,11 +598,13 @@ class Model:
                                                      weights = masks)
         self.optimizer = tf.train.AdamOptimizer(learning_rate).minimize(self.cost)
         y_t = tf.argmax(self.training_logits,axis=2)
+        print('y_t shape', y_t.shape)
         y_t = tf.cast(y_t, tf.int32)
         self.prediction = tf.boolean_mask(y_t, masks)
         mask_label = tf.boolean_mask(self.Y, masks)
         correct_pred = tf.equal(self.prediction, mask_label)
         correct_index = tf.cast(correct_pred, tf.float32)
+        print('correct index', correct_index.shape)
         self.accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
 
 tf.reset_default_graph()
@@ -619,15 +686,32 @@ for e in range(1):
                                                               np.mean(test_loss),np.mean(test_acc)))
 
 test_X = np.array(test_X).reshape((len(test_X), image_height, image_width,image_channel))
-test_Y,_ = pad_sentence_batch(test_Y, 0)
+test_YP,_ = pad_sentence_batch(test_Y, 0)
 t1 = time.time()
-# for i,x in enumerate(test_X):
-    # decoded = sess.run(model.predicting_ids, feed_dict = {model.X: test_X[i:i+1],
-    #                                           model.Y: test_Y[i:i+1]})[0]
+correct = 0
+incorrect = 0
+total = 0
+for i,x in enumerate(test_X):
+    decoded = sess.run(model.predicting_ids, feed_dict = {model.X: test_X[i:i+1],
+                                              model.Y: test_YP[i:i+1]})[0]
+
+    total += 1
     # print(decoded.shape)
     # for j in range(decoded.shape[1]):
-    #     d = decoded[:,j]
-    #     print(''.join([decode_maps[i] for i in d if i not in [0,1,2]]))
+    d = decoded[:,0]
+    output = ''.join([decode_maps[i] for i in d if i not in [0,1,2]])
+    orig = test_Y[i:i+1][0]
+    orig = ''.join([decode_maps[i] for i in orig if i not in [0,1,2]])
+    if orig != output:
+        incorrect += 1
+        print('pred: ',output)
+        print('orig: ',orig,'\n')
+    else:
+        correct += 1
 
+print('correct', correct)
+print('incorrect', incorrect)
+print('acc', (correct/total)*100)
+print('total', total)
 t2 = time.time() - t1
 print('total time taken', t2)

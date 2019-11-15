@@ -21,6 +21,18 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 
 
+def add_padding(image, max_width = 480):
+    h, w = image.shape[:2]
+    right = max_width - w
+    image = cv2.copyMakeBorder(image,0,0,0,right,cv2.BORDER_CONSTANT,value=(255,255,255))
+    return image
+
+def resize_scaled(image, height = 32):
+    h, w = image.shape[:2]
+    new_width = int((height * w)/h)
+    image = cv2.resize(image,(new_width,height),interpolation=cv2.INTER_AREA)
+    return image
+
 def read_dataset2(filename):
     output = []
     with open(filename, 'r', encoding='utf-8') as f:
@@ -42,13 +54,21 @@ def read_dataset(filename):
 
         for line in lines:
             output.append(line)
+    # random.shuffle(output)
     return output
 
 
+# directory = 'ocrv4_dataset'
 directory = 'ocrv4_dataset'
 images = []
+# images = []
 labels = []
 data = read_dataset(f'{directory}/annot_cleaned.csv')
+# for line in data:
+#     image_path = f'{directory}/{line[0]}'
+#     text = line[1]
+#     images.append(image_path)
+#     labels.append(text)
 for line in data:
     image_path = f'{directory}/{line[0]}'
     text = line[1]
@@ -95,8 +115,8 @@ image_width = 480
 image_channel = 1
 max_stepsize = 128
 num_hidden = 256
-epoch = 28
-batch_size = 128
+epoch = 50
+batch_size = 64
 initial_learning_rate = 1e-3
 
 
@@ -106,10 +126,20 @@ X, Y = [], []
 for i in tqdm(range(len(images))):
     img = images[i]
     __image = cv2.imread(img)
-    __image = cv2.cvtColor(__image,cv2.COLOR_BGR2GRAY)
-    _image = __image.astype(np.float32)/255.0
-    X.append(_image)
-    Y.append([encode_maps[c] for c in labels[i]] + [2])
+    if __image is not None:
+        # __image = resize_scaled(__image)
+        __image = cv2.cvtColor(__image,cv2.COLOR_BGR2GRAY)
+        _image = __image.astype(np.float32)
+        _image = _image / 255.0
+        X.append(_image)
+        Y.append([encode_maps[c] for c in labels[i]] + [2])
+        # h, w = __image.shape[:2]
+        # if w <= 480:
+        #     __image = add_padding(__image)
+        #     __image = cv2.cvtColor(__image,cv2.COLOR_BGR2GRAY)
+        #     _image = __image.astype(np.float32)/255.0
+        #     X.append(_image)
+        #     Y.append([encode_maps[c] for c in labels[i]] + [2])
 
 
 
@@ -414,7 +444,33 @@ learning_rate = 1e-4
 
 # tf.contrib.seq2seq as decoder part
 
+def Concatenation(layers):
+    return tf.concat(layers, axis=3)
+
+def concat_layer1(x,kernel,stride, filter=64):
+    x = tf.layers.conv2d(x, filter, kernel, stride, "SAME",
+            activation=tf.nn.relu)
+    x = tf.layers.max_pooling2d(x, 2, 2, "SAME")
+
+    return x
+
+
 class Model:
+    def batch_norm(self, name, x):
+        with tf.variable_scope(name):
+            params_shape = [x.get_shape()[-1]]
+            beta = tf.get_variable('beta', params_shape, tf.float32,
+                                   initializer=tf.constant_initializer(0.0, tf.float32))
+            gamma = tf.get_variable('gamma', params_shape, tf.float32,
+                                    initializer=tf.constant_initializer(1.0, tf.float32))
+            mean, variance = tf.nn.moments(x, [0, 1, 2], name='moments')
+            x_bn = tf.nn.batch_normalization(x, mean, variance, beta, gamma, 0.001)
+            x_bn.set_shape(x.get_shape())
+            return x_bn
+        
+    def leaky_relu(self, x, leak=0):
+        return tf.where(tf.less(x, 0.0), leak * x, x, name='leaky_relu')
+
     def __init__(self):
         self.X = tf.placeholder(tf.float32, shape=(None, 32, 480, 1))
         self.Y = tf.placeholder(tf.int32, [None, None])
@@ -427,26 +483,40 @@ class Model:
         decoder_embeddings = tf.Variable(tf.random_uniform([len(encode_maps), embedded_size], -1, 1))
         
         img = self.X
+        concat_layers = list()
+        out = img
+        concat_layers.append(concat_layer1(out,(5,5),(1,1)))
+        concat_layers.append(concat_layer1(out,(3,4),(1,1)))
+        concat_layers.append(concat_layer1(out,(3,3),(1,1)))
+        concat_layers.append(concat_layer1(out,(2,2),(1,1)))
+
+        out = Concatenation(concat_layers)
         
-        out = tf.layers.conv2d(img, 64, 3, 1, "SAME",
-                activation=tf.nn.relu)
-        out = tf.layers.max_pooling2d(out, 2, 2, "SAME")
+        # out = self.batch_norm('bn1',out)
+        # out = tf.nn.dropout(out,.5)
+        concat_layers = list()
+        # concat_layers.append(out)
+        concat_layers.append(concat_layer1(out,(3,3),(1,1),256))
+        concat_layers.append(concat_layer1(out,(1,1),(1,1),256))
+        out = Concatenation(concat_layers)
+        # out = tf.layers.max_pooling2d(out, 2, 2, "SAME")
+        # out = self.batch_norm('bn2',out)
+        # out = tf.nn.dropout(out,.5)
 
-        out = tf.layers.conv2d(out, 128, 3, 1, "SAME",
+        out = tf.layers.conv2d(out, 512, (3,3), (1,1), "SAME",
                 activation=tf.nn.relu)
-        out = tf.layers.max_pooling2d(out, 2, 2, "SAME")
-
-        out = tf.layers.conv2d(out, 256, 3, 1, "SAME",
-                activation=tf.nn.relu)
-
-        out = tf.layers.conv2d(out, 256, 3, 1, "SAME",
-                activation=tf.nn.relu)
+        # out = self.batch_norm('bn3',out)
+        # out = tf.nn.dropout(out,.5)
+        # out = tf.layers.conv2d(out, 256, 3, 1, "SAME",
+        #         activation=tf.nn.relu)
         out = tf.layers.max_pooling2d(out, (2, 1), (2, 1), "SAME")
-        out = tf.layers.conv2d(out, 512, 3, 1, "SAME",
+        out = tf.layers.conv2d(out, 512, (3,3), (1,1), "SAME",
                 activation=tf.nn.relu)
-        out = tf.layers.max_pooling2d(out, (1, 2), (1, 2), "SAME")
-        out = tf.layers.conv2d(out, 512, 3, 1, "VALID",
+        print('out shape', out.shape)
+        out = tf.layers.max_pooling2d(out, (2, 2), (2, 2), "SAME")
+        out = tf.layers.conv2d(out, 512, 1, 1, "VALID",
                 activation=tf.nn.relu)
+        print('out shape', out.shape)
         img = add_timing_signal_nd(out)
         print(img)
         
@@ -502,7 +572,13 @@ class Model:
         masks = tf.sequence_mask(self.Y_seq_len, tf.reduce_max(self.Y_seq_len), dtype=tf.float32)
         self.cost = tf.contrib.seq2seq.sequence_loss(logits = self.training_logits,
                                                      targets = self.Y,
-                                                     weights = masks)
+                                                     weights = masks,
+                                                     average_across_batch = True,
+                                                     average_across_timesteps=True,
+                                                     sum_over_timesteps = False)
+        # _cost = tf.sort(self.cost,direction='DESCENDING')
+        # _cost, _index = tf.math.top_k(_cost,24)
+        # self.cost = tf.reduce_mean(_cost)
         self.optimizer = tf.train.AdamOptimizer(learning_rate).minimize(self.cost)
         y_t = tf.argmax(self.training_logits,axis=2)
         y_t = tf.cast(y_t, tf.int32)
@@ -533,8 +609,8 @@ batch_x = train_X[:5]
 batch_x = np.array(batch_x).reshape((len(batch_x), image_height, image_width,image_channel))
 y = train_Y[:5]
 batch_y, _ = pad_sentence_batch(y, 0)
-loss, logits, acc = sess.run([model.cost, model.training_logits, model.accuracy], feed_dict = {model.X: batch_x,
-                                                          model.Y: batch_y})
+# loss, logits, acc = sess.run([model.cost, model.training_logits, model.accuracy], feed_dict = {model.X: batch_x,
+#                                                           model.Y: batch_y})
 
 
 saver_all = tf.train.Saver(tf.all_variables())
