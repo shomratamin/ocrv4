@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 
 
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 def add_padding(image, max_width = 480):
     h, w = image.shape[:2]
@@ -92,7 +92,7 @@ image_channel = 1
 max_stepsize = 128
 num_hidden = 256
 epoch = 20
-batch_size = 256
+batch_size = 16
 initial_learning_rate = 1e-3
 
 
@@ -129,10 +129,11 @@ class Model:
         x = tf.reshape(x, [batch_size, -1, filters[3]])
         x = tf.transpose(x, [0, 2, 1])
         x = tf.reshape(x, [batch_size, filters[3], 4 * 15])
-        cell = tf.contrib.rnn.LSTMCell(num_hidden)
-        cell1 = tf.contrib.rnn.LSTMCell(num_hidden)
-        stack = tf.contrib.rnn.MultiRNNCell([cell, cell1])
-        outputs, _ = tf.nn.dynamic_rnn(stack, x, self.SEQ_LEN, dtype=tf.float32)
+        # cell = tf.contrib.rnn.LSTMCell(num_hidden)
+        # cell1 = tf.contrib.rnn.LSTMCell(num_hidden)
+        # stack = tf.contrib.rnn.MultiRNNCell([cell, cell1])
+        # outputs, _ = tf.nn.dynamic_rnn(stack, x, self.SEQ_LEN, dtype=tf.float32)
+        outputs = tf.nn.cudnn_rnn.CudnnGRU(2,num_hidden,direction='bidirectional')
         outputs = tf.reshape(outputs, [-1, num_hidden])
         self.logits = tf.layers.dense(outputs, num_classes)
         shape = tf.shape(x)
