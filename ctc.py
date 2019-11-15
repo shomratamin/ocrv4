@@ -133,7 +133,7 @@ class Model:
         # cell1 = tf.contrib.rnn.LSTMCell(num_hidden)
         # stack = tf.contrib.rnn.MultiRNNCell([cell, cell1])
         # outputs, _ = tf.nn.dynamic_rnn(stack, x, self.SEQ_LEN, dtype=tf.float32)
-        outputs = tf.nn.cudnn_rnn.CudnnGRU(2,num_hidden,direction='bidirectional')
+        outputs = tf.contrib.cudnn_rnn.CudnnGRU(2,num_hidden,direction='bidirectional')
         outputs = tf.reshape(outputs, [-1, num_hidden])
         self.logits = tf.layers.dense(outputs, num_classes)
         shape = tf.shape(x)
