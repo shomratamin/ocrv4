@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 
 
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
 def add_padding(image, max_width = 480):
     h, w = image.shape[:2]
@@ -92,7 +92,7 @@ image_channel = 1
 max_stepsize = 128
 num_hidden = 256
 epoch = 20
-batch_size = 128
+batch_size = 256
 initial_learning_rate = 1e-3
 
 
