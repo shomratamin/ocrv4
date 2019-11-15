@@ -20,7 +20,82 @@ import random
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
+global counter
+counter = 0
 
+def find_largest_contour(image):
+    contours, hierarchy = cv2.findContours(image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    areas = [cv2.contourArea(c) for c in contours]
+    max_index = np.argmax(areas)
+    cnt = contours[max_index]
+    return cnt
+
+def crop_minAreaRect(img, rect):
+    # get the parameter of the small rectangle
+    center, size, angle = rect[0], rect[1], rect[2]
+    
+    if angle < -45:
+        angle = angle + 90
+        size = (size[1], size[0])
+    size = (size[0] + 3, size[1] * 1.2)
+    center, size = tuple(map(int, center)), tuple(map(int, size))
+
+    # get row and col num in img
+    height, width = img.shape[0], img.shape[1]
+
+    # calculate the rotation matrix
+    M = cv2.getRotationMatrix2D(center, angle, 1)
+    # rotate the original image
+    img_rot = cv2.warpAffine(img, M, (width, height),borderValue=(255,255,255))
+
+    # now rotated rectangle becomes vertical and we crop it
+    img_crop = cv2.getRectSubPix(img_rot, size, center)
+
+    return img_crop
+
+def auto_rotate_text_line(line_image, _file=None):
+    global counter
+    image = line_image.copy()
+    image = cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
+    image = illumination_correction(image)
+    image = threshold(image)
+    _structure = cv2.getStructuringElement(cv2.MORPH_RECT,(25,1))
+    image = cv2.morphologyEx(image,cv2.MORPH_ERODE,_structure)
+    image = cv2.morphologyEx(image,cv2.MORPH_DILATE,_structure)
+    image = cv2.bitwise_not(image)
+
+    pts = find_largest_contour(image)
+    rotated_rect = cv2.minAreaRect(pts)
+    output_roi = crop_minAreaRect(line_image.copy(), rotated_rect)
+    # output_roi = output_roi[:,:]
+    # output_roi = resize_for_ocr(output_roi)
+
+    # cv2.drawContours(line_image,[pts],-1,(147,20,255),1)
+    # cv2.imwrite('tmp/{}.jpg'.format(counter), line_image)
+    # counter += 1
+    # cv2.imwrite('tmp/{}.jpg'.format(counter), output_roi)
+    # counter += 1
+    # to replace the original file with cropped and angle corrected line
+    # cv2.imwrite(_file, output_roi)
+
+    # output_roi = illumination_correction(output_roi,False)
+    # output_roi = cv2.equalizeHist(output_roi)
+    # output_roi = threshold(output_roi)
+    return output_roi
+
+def threshold(image):
+    image = cv2.threshold(image,128,255,cv2.THRESH_OTSU)[1]
+    return image
+
+
+def illumination_correction(image, erode=True):
+    _structure = cv2.getStructuringElement(cv2.MORPH_RECT,(15,15))
+    image = cv2.morphologyEx(image,cv2.MORPH_BLACKHAT,_structure)
+    image = cv2.bitwise_not(image)
+    if erode:
+        _structure = cv2.getStructuringElement(cv2.MORPH_RECT,(15,1))
+        image = cv2.morphologyEx(image,cv2.MORPH_ERODE,_structure)
+    return image
 
 
 def add_padding(image, max_width = 480):
@@ -128,13 +203,14 @@ for i in tqdm(range(len(images))):
     img = images[i]
     __image = cv2.imread(img)
     if __image is not None:
+        # __image = auto_rotate_text_line(__image)
         __image = resize_scaled(__image)
         h, w = __image.shape[:2]
         if w <= 480:
             __image = add_padding(__image)
             __image = cv2.cvtColor(__image,cv2.COLOR_BGR2GRAY)
-            _image = __image.astype(np.float32) - 128.0
-            _image = _image / 128.0
+            _image = __image.astype(np.float32)
+            _image = _image / 255.0
             X.append(_image)
             Y.append([encode_maps[c] for c in labels[i]] + [2])
 
@@ -439,7 +515,7 @@ def add_timing_signal_nd(x, min_timescale=1.0, max_timescale=1.0e4):
 attention_size = 256
 size_layer = 256
 embedded_size = 256
-beam_width = 15
+beam_width = 3
 learning_rate = 1e-5
 
 
@@ -448,8 +524,8 @@ learning_rate = 1e-5
 def Concatenation(layers):
     return tf.concat(layers, axis=3)
 
-def concat_layer1(x,kernel,stride):
-    x = tf.layers.conv2d(x, 64, kernel, stride, "SAME",
+def concat_layer1(x,kernel,stride, filter=64):
+    x = tf.layers.conv2d(x, filter, kernel, stride, "SAME",
             activation=tf.nn.relu)
     x = tf.layers.max_pooling2d(x, 2, 2, "SAME")
 
@@ -555,7 +631,7 @@ class Model:
                     inputs = tf.nn.embedding_lookup(decoder_embeddings, decoder_input),
                     sequence_length = self.Y_seq_len,
                     embedding = decoder_embeddings,
-                    sampling_probability = 0.5,
+                    sampling_probability = 1.0,
                     time_major = False)
             training_decoder = tf.contrib.seq2seq.BasicDecoder(
                     cell = attn_cell,
@@ -691,23 +767,31 @@ t1 = time.time()
 correct = 0
 incorrect = 0
 total = 0
+max_len = len(test_X)
 for i,x in enumerate(test_X):
-    decoded = sess.run(model.predicting_ids, feed_dict = {model.X: test_X[i:i+1],
-                                              model.Y: test_YP[i:i+1]})[0]
+    start = i * batch_size
+    end = start + batch_size
+    if end > max_len:
+        end = max_len
+    if start >= max_len:
+        break
+    decoded_batch = sess.run(model.predicting_ids, feed_dict = {model.X: test_X[start:end],
+                                              model.Y: test_YP[start:end]})
 
-    total += 1
     # print(decoded.shape)
     # for j in range(decoded.shape[1]):
-    d = decoded[:,0]
-    output = ''.join([decode_maps[i] for i in d if i not in [0,1,2]])
-    orig = test_Y[i:i+1][0]
-    orig = ''.join([decode_maps[i] for i in orig if i not in [0,1,2]])
-    if orig != output:
-        incorrect += 1
-        print('pred: ',output)
-        print('orig: ',orig,'\n')
-    else:
-        correct += 1
+    for j, decoded in enumerate(decoded_batch):
+        total += 1
+        d = decoded[:,0]
+        output = ''.join([decode_maps[i] for i in d if i not in [0,1,2]])
+        orig = test_Y[start:end][j]
+        orig = ''.join([decode_maps[i] for i in orig if i not in [0,1,2]])
+        if orig != output:
+            incorrect += 1
+            print('pred: ',output)
+            print('orig: ',orig,'\n')
+        else:
+            correct += 1
 
 print('correct', correct)
 print('incorrect', incorrect)
