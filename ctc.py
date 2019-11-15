@@ -237,6 +237,16 @@ for i in tqdm(range(len(images))):
 
 train_X, test_X, train_Y, test_Y = train_test_split(X, Y, test_size = 0.05)
 
+saver_all = tf.train.Saver(tf.all_variables())
+
+checkpoint_path = os.path.join('checkpoints_ctc', "model.ckpt")
+
+ckpt = tf.train.get_checkpoint_state('checkpoints_ctc')
+if ckpt:
+    print('restore checkpoints')
+    saver_all.restore(sess, ckpt.model_checkpoint_path)
+else:
+    sess.run(tf.initialize_all_variables())
 
 for e in range(epoch):
     pbar = tqdm(
